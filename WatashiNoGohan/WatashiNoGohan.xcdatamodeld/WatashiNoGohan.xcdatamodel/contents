@@ -6,8 +6,11 @@
         <attribute name="photo" optional="YES" attributeType="Binary"/>
         <attribute name="ratingCost" optional="YES" attributeType="Integer 16" defaultValueString="0" usesScalarValueType="YES"/>
         <attribute name="ratingQuietness" optional="YES" attributeType="Integer 16" defaultValueString="0" usesScalarValueType="YES"/>
+        <attribute name="ratings" optional="YES" attributeType="Transformable"/>
         <attribute name="ratingTaste" optional="YES" attributeType="Integer 16" defaultValueString="0" usesScalarValueType="YES"/>
         <attribute name="revisit" optional="YES" attributeType="Boolean" usesScalarValueType="YES"/>
         <attribute name="shopName" optional="YES" attributeType="String"/>
+        <attribute name="stationLine" optional="YES" attributeType="String"/>
+        <attribute name="stationName" optional="YES" attributeType="String"/>
     </entity>
 </model>
