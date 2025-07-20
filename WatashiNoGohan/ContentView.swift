@@ -8,6 +8,7 @@
 import SwiftUI
 import Charts
 import PhotosUI
+import CoreData
 
 // 採点バッジ用構造体
 struct RatingItem: Identifiable {
@@ -24,10 +25,12 @@ enum StationInputMode: String, CaseIterable, Identifiable {
 
 struct ContentView: View {
     @StateObject var ratingStore = RatingItemsStore()
+    @State var refreshID = UUID()
     var body: some View {
         TabView {
             // 一覧タブ
-            ListView(ratingStore: ratingStore)
+            ListView(ratingStore: ratingStore, refreshID: $refreshID)
+                .id(refreshID)
                 .tabItem {
                     Label(NSLocalizedString("tab_list", comment: ""), systemImage: "list.bullet")
                 }
@@ -48,9 +51,10 @@ struct ContentView: View {
 // 一覧画面プレースホルダー
 struct ListView: View {
     @ObservedObject var ratingStore: RatingItemsStore = RatingItemsStore()
+    @Binding var refreshID: UUID
     @FetchRequest(
         sortDescriptors: [NSSortDescriptor(keyPath: \FoodLog.date, ascending: false)],
-        animation: .default)
+        animation: nil)
     private var logs: FetchedResults<FoodLog>
     
     let dateFormatter: DateFormatter = {
@@ -76,7 +80,10 @@ enum DateFilterMode: String, CaseIterable, Identifiable {
 }
     // 検索フィルタ
     var filteredLogs: [FoodLog] {
-        Array(logs).filter { log in
+        let arr = Array(logs)
+        print("logs:", logs.map { $0.shopName ?? "nil" })
+        print("filteredLogs:", arr.map { $0.shopName ?? "nil" })
+        return arr.filter { log in
             // 検索テキスト
             let matchesSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                 (log.shopName ?? "").localizedCaseInsensitiveContains(searchText) ||
@@ -127,10 +134,11 @@ enum DateFilterMode: String, CaseIterable, Identifiable {
                 .padding([.horizontal, .top])
                 // フィルターカード
                 VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Toggle("日付で検索する", isOn: $useDateFilter)
+                    HStack(alignment: .center, spacing: 24) {
+                        Toggle("日付で検索", isOn: $useDateFilter)
                             .toggleStyle(.switch)
-                        Spacer()
+                        Toggle("再訪あり", isOn: $filterRevisitOnly)
+                            .toggleStyle(.switch)
                     }
                     if useDateFilter {
                         Picker("検索単位", selection: $dateFilterMode) {
@@ -194,8 +202,6 @@ enum DateFilterMode: String, CaseIterable, Identifiable {
                             }
                         }
                     }
-                    Toggle("再訪ありのみ", isOn: $filterRevisitOnly)
-                        .toggleStyle(.switch)
                 }
                 .padding()
                 .background(Color(.systemGray6))
@@ -205,8 +211,8 @@ enum DateFilterMode: String, CaseIterable, Identifiable {
                 .padding(.bottom, 2)
                 
                 List {
-                    ForEach(filteredLogs) { log in
-                        NavigationLink(destination: DetailView(log: log, dateFormatter: dateFormatter, ratingStore: ratingStore)) {
+                    ForEach(filteredLogs, id: \.uuid) { log in
+                        NavigationLink(destination: DetailView(log: log, dateFormatter: dateFormatter, ratingStore: ratingStore, refreshID: $refreshID)) {
                             ListRowView(log: log, dateFormatter: dateFormatter)
                         }
                     }
@@ -247,8 +253,15 @@ struct ListRowView: View {
     let log: FoodLog
     let dateFormatter: DateFormatter
     var sortedRatingItems: [RatingItem] {
-        (log.ratings as? [String: Int])?.sorted { $0.key < $1.key }
-            .map { RatingItem(id: $0.key, value: $0.value) } ?? []
+        guard let dict = log.ratings as? [String: Int] else { return [] }
+        var items: [RatingItem] = []
+        if let value = dict[commonRatingKey] {
+            items.append(RatingItem(id: commonRatingKey, value: value))
+        }
+        for (k, v) in dict.sorted(by: { $0.key < $1.key }) where k != commonRatingKey {
+            items.append(RatingItem(id: k, value: v))
+        }
+        return items
     }
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -325,7 +338,11 @@ struct RatingBadgeList: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(items) { item in
-                        RatingBadge(item: item)
+                        if item.id == commonRatingKey {
+                            RatingBadge(item: item, isMain: true)
+                        } else {
+                            RatingBadge(item: item, isMain: false)
+                        }
                     }
                 }
             }
@@ -365,11 +382,17 @@ struct RowMemo: View {
 // 採点バッジサブView
 struct RatingBadge: View {
     let item: RatingItem
+    var isMain: Bool = false
     var body: some View {
         HStack(spacing: 2) {
+            if isMain {
+                Image(systemName: "star.fill")
+                    .font(.caption2)
+                    .foregroundColor(.accentColor)
+            }
             Text(item.id)
                 .font(.caption)
-                .fontWeight(.semibold)
+                .fontWeight(isMain ? .bold : .semibold)
             Text(":")
                 .font(.caption)
             Text("\(item.value)")
@@ -378,7 +401,11 @@ struct RatingBadge: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .background(Color.accentColor.opacity(0.12))
+        .background(isMain ? Color.accentColor.opacity(0.15) : Color.accentColor.opacity(0.08))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(isMain ? Color.accentColor : Color.clear, lineWidth: isMain ? 1.5 : 0)
+        )
         .foregroundColor(.accentColor)
         .cornerRadius(10)
     }
@@ -389,6 +416,7 @@ struct DetailView: View {
     let log: FoodLog
     let dateFormatter: DateFormatter
     @ObservedObject var ratingStore: RatingItemsStore
+    @Binding var refreshID: UUID
     @State private var showEdit = false
     var sortedRatingItems: [RatingItem] {
         (log.ratings as? [String: Int])?.sorted { $0.key < $1.key }
@@ -416,7 +444,7 @@ struct DetailView: View {
             }
         }
         .sheet(isPresented: $showEdit) {
-            EditView(log: log, ratingStore: ratingStore)
+            EditView(log: log, ratingStore: ratingStore, refreshID: $refreshID)
         }
     }
 }
@@ -491,38 +519,166 @@ struct DetailMemo: View {
 struct EditView: View {
     @ObservedObject var log: FoodLog
     @ObservedObject var ratingStore: RatingItemsStore
+    @Binding var refreshID: UUID
     @Environment(\.managedObjectContext) private var context
     @Environment(\.dismiss) private var dismiss
     @State private var shopName: String = ""
     @State private var memo: String = ""
     @State private var ratings: [String: Int] = [:]
+    @State private var editingIndex: Int? = nil
+    @State private var editingName: String = ""
+    @State private var newRatingItem: String = ""
     @State private var revisit: Bool = false
     @State private var selectedLine: String = trainLineNames.first ?? "山手線"
     @State private var selectedStation: String = trainLines[trainLineNames.first ?? "山手線"]?.first ?? ""
     @State private var customStationName: String = ""
     @State private var selectedImageData: Data? = nil
     @State private var selectedItem: PhotosPickerItem? = nil
+    @State private var shouldRegister: Bool = false
+    @State private var inputMode: StationInputMode = .registerStation
+    @State private var showStationSheet: Bool = false
+    // Sheet用ローカルState
+    @State private var sheetShouldRegister: Bool = true
+    @State private var sheetInputMode: StationInputMode = .registerStation
+    @State private var sheetSelectedLine: String = trainLineNames.first ?? "山手線"
+    @State private var sheetSelectedStation: String = trainLines[trainLineNames.first ?? "山手線"]?.first ?? ""
+    @State private var sheetCustomStationName: String = ""
     var body: some View {
         NavigationView {
             Form {
-                EditStationSection(selectedLine: $selectedLine, selectedStation: $selectedStation, customStationName: $customStationName)
+                // 駅名・地名登録用ボタン
+                Button(action: {
+                    // Sheet用ローカルStateに現在の値をコピー
+                    sheetShouldRegister = shouldRegister
+                    sheetInputMode = inputMode
+                    sheetSelectedLine = selectedLine
+                    sheetSelectedStation = selectedStation
+                    sheetCustomStationName = customStationName
+                    showStationSheet = true
+                }) {
+                    HStack {
+                        Text("地名・駅名を登録する")
+                        Spacer()
+                        if shouldRegister {
+                            if inputMode == .registerStation {
+                                Text(selectedStation)
+                            } else {
+                                Text(customStationName)
+                            }
+                        } else {
+                            Text("未登録")
+                        }
+                        Image(systemName: "chevron.right")
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .sheet(isPresented: $showStationSheet) {
+                    NavigationView {
+                        Form {
+                            EditStationSection(selectedLine: $sheetSelectedLine, selectedStation: $sheetSelectedStation, customStationName: $sheetCustomStationName, shouldRegister: $sheetShouldRegister, inputMode: $sheetInputMode, onConfirm: {
+                                // 確定時にローカルStateの値をEditViewのStateに反映
+                                shouldRegister = sheetShouldRegister
+                                inputMode = sheetInputMode
+                                selectedLine = sheetSelectedLine
+                                selectedStation = sheetSelectedStation
+                                customStationName = sheetCustomStationName
+                                showStationSheet = false
+                            })
+                        }
+                        .navigationTitle("地名・駅名の登録")
+                        .navigationBarItems(leading: Button("キャンセル") { showStationSheet = false })
+                    }
+                }
                 EditShopSection(shopName: $shopName)
                 EditMemoSection(memo: $memo)
                 EditPhotoSection(selectedItem: $selectedItem, selectedImageData: $selectedImageData, photo: log.photo)
-                EditRatingSection(ratingStore: ratingStore, ratings: $ratings)
+                // 採点項目編集リスト（総合評価＋個別）
+                Section(header: Text("採点")) {
+                    List {
+                        // 総合評価を先頭に表示（編集可、名前変更・削除不可）
+                        RatingStepper(item: commonRatingKey, value: Binding(
+                            get: { ratings[commonRatingKey] ?? 3 },
+                            set: { ratings[commonRatingKey] = $0 }
+                        ))
+                        .foregroundColor(.accentColor)
+                        // 個別項目（記録ごとに編集可）
+                        let customItems = ratings.keys.filter { $0 != commonRatingKey }
+                        ForEach(Array(customItems.enumerated()), id: \.element) { index, item in
+                            HStack {
+                                if editingIndex == index {
+                                    TextField("項目名を編集", text: $editingName, onCommit: {
+                                        let trimmed = editingName.trimmingCharacters(in: .whitespacesAndNewlines)
+                                        guard !trimmed.isEmpty else { return }
+                                        let value = ratings[item] ?? 3
+                                        ratings.removeValue(forKey: item)
+                                        ratings[trimmed] = value
+                                        editingIndex = nil
+                                        editingName = ""
+                                    })
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 120)
+                                    .submitLabel(.done)
+                                    .onSubmit {
+                                        UIApplication.shared.endEditing()
+                                    }
+                                } else {
+                                    Button(action: {
+                                        editingIndex = index
+                                        editingName = item
+                                    }) {
+                                        RatingStepper(item: item, value: Binding(
+                                            get: { ratings[item] ?? 3 },
+                                            set: { ratings[item] = $0 })
+                                        )
+                                        .foregroundColor(.primary)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                        .onDelete { offsets in
+                            let customItems = ratings.keys.filter { $0 != commonRatingKey }
+                            for offset in offsets {
+                                let item = Array(customItems)[offset]
+                                ratings.removeValue(forKey: item)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 220)
+                    HStack {
+                        TextField("新しい項目名を追加", text: $newRatingItem)
+                            .textFieldStyle(.roundedBorder)
+                            .submitLabel(.done)
+                            .onSubmit {
+                                UIApplication.shared.endEditing()
+                            }
+                        Button(action: {
+                            let trimmed = newRatingItem.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !trimmed.isEmpty, !ratings.keys.contains(trimmed), trimmed != commonRatingKey else { return }
+                            ratings[trimmed] = 3
+                            newRatingItem = ""
+                        }) {
+                            Image(systemName: "plus.circle.fill")
+                        }
+                        .disabled(newRatingItem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
                 EditRevisitSection(revisit: $revisit)
                 EditSaveButton {
                     log.shopName = shopName
                     log.memo = memo
                     log.ratings = ratings as NSDictionary
                     log.revisit = revisit
-                    log.stationName = customStationName.isEmpty ? selectedStation : customStationName // 空欄でもOK
+                    log.stationName = shouldRegister ? (inputMode == .registerStation ? selectedStation : customStationName) : ""
                     log.stationLine = selectedLine
                     if let data = selectedImageData {
                         log.photo = data
                     }
+                    log.objectWillChange.send()
                     do {
                         try context.save()
+                        context.refreshAllObjects()
+                        refreshID = UUID() // 一覧を強制再描画
                         dismiss()
                         withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
                             // 軽いアニメーション
@@ -548,6 +704,8 @@ struct EditView: View {
             selectedLine = log.stationLine ?? trainLineNames.first ?? "山手線"
             selectedStation = log.stationName ?? trainLines[selectedLine]?.first ?? ""
             customStationName = (log.stationName ?? "").isEmpty ? "" : log.stationName ?? ""
+            shouldRegister = !(log.stationName ?? "").isEmpty
+            inputMode = (log.stationName ?? "").isEmpty ? .registerStation : (trainLines[selectedLine]?.contains(selectedStation) ?? false ? .registerStation : .other)
             if let dict = log.ratings as? [String: Int] {
                 ratings = dict
             }
@@ -574,8 +732,9 @@ struct EditStationSection: View {
     @Binding var selectedLine: String
     @Binding var selectedStation: String
     @Binding var customStationName: String
-    @State private var shouldRegister: Bool = false
-    @State private var inputMode: StationInputMode = .registerStation
+    @Binding var shouldRegister: Bool
+    @Binding var inputMode: StationInputMode
+    var onConfirm: (() -> Void)? = nil
     var body: some View {
         Section(header: Text("地名・駅名の登録")) {
             Toggle("地名・駅名を登録する", isOn: $shouldRegister)
@@ -600,10 +759,30 @@ struct EditStationSection: View {
                         }
                     }
                     .pickerStyle(.wheel)
+                    Button("確定") {
+                        onConfirm?()
+                    }
+                    .padding(.top, 8)
+                    .frame(maxWidth: .infinity)
                 } else {
                     TextField("駅名・地名（任意）", text: $customStationName)
                         .textInputAutocapitalization(.never)
+                        .submitLabel(.done)
+                        .onSubmit {
+                            UIApplication.shared.endEditing()
+                        }
+                    Button("確定") {
+                        onConfirm?()
+                    }
+                    .padding(.top, 8)
+                    .frame(maxWidth: .infinity)
                 }
+            } else {
+                Button("確定") {
+                    onConfirm?()
+                }
+                .padding(.top, 8)
+                .frame(maxWidth: .infinity)
             }
         }
     }
@@ -616,6 +795,10 @@ struct EditShopSection: View {
         Section(header: Text(NSLocalizedString("shop_placeholder", comment: ""))) {
             TextField(NSLocalizedString("shop_placeholder", comment: ""), text: $shopName)
                 .textInputAutocapitalization(.never)
+                .submitLabel(.done)
+                .onSubmit {
+                    UIApplication.shared.endEditing()
+                }
         }
     }
 }
@@ -631,6 +814,10 @@ struct EditMemoSection: View {
                     RoundedRectangle(cornerRadius: 8)
                         .stroke(Color.secondary.opacity(0.2))
                 )
+                .submitLabel(.done)
+                .onSubmit {
+                    UIApplication.shared.endEditing()
+                }
         }
     }
 }
@@ -723,12 +910,25 @@ struct AddView: View {
     @State private var selectedItem: PhotosPickerItem? = nil
     @State private var selectedImageData: Data? = nil
     @State private var showToast: Bool = false
+    @State private var showStationSheet: Bool = false
+    // Sheet用ローカルState
+    @State private var sheetShouldRegister: Bool = true
+    @State private var sheetInputMode: StationInputMode = .registerStation
+    @State private var sheetSelectedLine: String = trainLineNames.first ?? "山手線"
+    @State private var sheetSelectedStation: String = trainLines[trainLineNames.first ?? "山手線"]?.first ?? ""
+    @State private var sheetCustomStationName: String = ""
     
     @Environment(\.managedObjectContext) private var context
     
     var body: some View {
         NavigationView {
             ZStack(alignment: .top) {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        UIApplication.shared.endEditing()
+                    }
+                    .ignoresSafeArea()
                 if showToast {
                     VStack(spacing: 8) {
                         HStack {
@@ -759,23 +959,78 @@ struct AddView: View {
                 }
                 Form {
                     EditShopSection(shopName: $shopName)
-                    EditStationSection(selectedLine: $selectedLine, selectedStation: $selectedStation, customStationName: $customStationName)
+                    // 駅名・地名登録用ボタン
+                    Button(action: {
+                        // Sheet用ローカルStateに現在の値をコピー
+                        sheetShouldRegister = true
+                        sheetInputMode = inputMode
+                        sheetSelectedLine = selectedLine
+                        sheetSelectedStation = selectedStation
+                        sheetCustomStationName = customStationName
+                        showStationSheet = true
+                    }) {
+                        HStack {
+                            Text("地名・駅名を登録する")
+                            Spacer()
+                            if shouldRegister {
+                                if inputMode == .registerStation {
+                                    Text(selectedStation)
+                                } else {
+                                    Text(customStationName)
+                                }
+                            } else {
+                                Text("未登録")
+                            }
+                            Image(systemName: "chevron.right")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .sheet(isPresented: $showStationSheet) {
+                        NavigationView {
+                            Form {
+                                EditStationSection(selectedLine: $sheetSelectedLine, selectedStation: $sheetSelectedStation, customStationName: $sheetCustomStationName, shouldRegister: $sheetShouldRegister, inputMode: $sheetInputMode, onConfirm: {
+                                    // 確定時にローカルStateの値をAddViewのStateに反映
+                                    shouldRegister = sheetShouldRegister
+                                    inputMode = sheetInputMode
+                                    selectedLine = sheetSelectedLine
+                                    selectedStation = sheetSelectedStation
+                                    customStationName = sheetCustomStationName
+                                    showStationSheet = false
+                                })
+                            }
+                            .navigationTitle("地名・駅名の登録")
+                            .navigationBarItems(leading: Button("キャンセル") { showStationSheet = false })
+                        }
+                    }
                     EditMemoSection(memo: $memo)
                     EditPhotoSection(selectedItem: $selectedItem, selectedImageData: $selectedImageData, photo: nil)
                     Section(header: Text("採点")) {
+                        // 総合評価（編集可）
+                        RatingStepper(item: commonRatingKey, value: Binding(
+                            get: { ratings[commonRatingKey] ?? 3 },
+                            set: { ratings[commonRatingKey] = $0 }
+                        ))
+                        // 個別項目（記録ごとに編集可）
                         List {
-                            ForEach(Array(ratingStore.items.enumerated()), id: \.element) { index, item in
+                            let customItems = ratings.keys.filter { $0 != commonRatingKey }
+                            ForEach(Array(customItems.enumerated()), id: \.element) { index, item in
                                 HStack {
                                     if editingIndex == index {
                                         TextField("項目名を編集", text: $editingName, onCommit: {
                                             let trimmed = editingName.trimmingCharacters(in: .whitespacesAndNewlines)
                                             guard !trimmed.isEmpty else { return }
-                                            ratingStore.items[index] = trimmed
+                                            let value = ratings[item] ?? 3
+                                            ratings.removeValue(forKey: item)
+                                            ratings[trimmed] = value
                                             editingIndex = nil
                                             editingName = ""
                                         })
                                         .textFieldStyle(.roundedBorder)
                                         .frame(width: 120)
+                                        .submitLabel(.done)
+                                        .onSubmit {
+                                            UIApplication.shared.endEditing()
+                                        }
                                     } else {
                                         Button(action: {
                                             editingIndex = index
@@ -792,10 +1047,10 @@ struct AddView: View {
                                 }
                             }
                             .onDelete { offsets in
+                                let customItems = ratings.keys.filter { $0 != commonRatingKey }
                                 for offset in offsets {
-                                    let item = ratingStore.items[offset]
-                                    ratingStore.items.remove(at: offset)
-                                    ratings[item] = nil
+                                    let item = Array(customItems)[offset]
+                                    ratings.removeValue(forKey: item)
                                 }
                             }
                         }
@@ -803,10 +1058,14 @@ struct AddView: View {
                         HStack {
                             TextField("新しい項目名を追加", text: $newRatingItem)
                                 .textFieldStyle(.roundedBorder)
+                                .submitLabel(.done)
+                                .onSubmit {
+                                    UIApplication.shared.endEditing()
+                                }
                             Button(action: {
                                 let trimmed = newRatingItem.trimmingCharacters(in: .whitespacesAndNewlines)
-                                guard !trimmed.isEmpty, !ratingStore.items.contains(trimmed) else { return }
-                                ratingStore.items.append(trimmed)
+                                guard !trimmed.isEmpty, !ratings.keys.contains(trimmed), trimmed != commonRatingKey else { return }
+                                ratings[trimmed] = 3
                                 newRatingItem = ""
                             }) {
                                 Image(systemName: "plus.circle.fill")
@@ -817,6 +1076,7 @@ struct AddView: View {
                     EditRevisitSection(revisit: $revisit)
                     EditSaveButton {
                         let newLog = FoodLog(context: context)
+                        newLog.uuid = UUID()
                         newLog.date = Date()
                         newLog.shopName = shopName
                         newLog.memo = memo
@@ -827,6 +1087,8 @@ struct AddView: View {
                         if let data = selectedImageData {
                             newLog.photo = data
                         }
+                        // ratingsをUserDefaultsに保存
+                        UserDefaults.standard.set(ratings, forKey: "lastRatings")
                         do {
                             try context.save()
                             shopName = ""
@@ -859,12 +1121,77 @@ struct AddView: View {
             }
         }
         .onAppear {
-            // 初期値セット
-            for item in ratingStore.items {
-                if ratings[item] == nil {
-                    ratings[item] = 3
+            if let last = UserDefaults.standard.dictionary(forKey: "lastRatings") as? [String: Int] {
+                var newRatings: [String: Int] = [:]
+                for key in last.keys {
+                    newRatings[key] = 3
+                }
+                ratings = newRatings
+            } else {
+                ratings = [commonRatingKey: 3]
+            }
+        }
+    }
+}
+
+// 採点項目編集用サブView
+struct RatingItemRow: View {
+    let index: Int
+    let item: String
+    @Binding var editingIndex: Int?
+    @Binding var editingName: String
+    @ObservedObject var ratingStore: RatingItemsStore
+    @Binding var ratings: [String: Int]
+    @Environment(\.managedObjectContext) private var context
+    var body: some View {
+        HStack {
+            if editingIndex == index {
+                TextField("項目名を編集", text: $editingName, onCommit: {
+                    let trimmed = editingName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty else { return }
+                    let oldName = ratingStore.items[index]
+                    ratingStore.items[index] = trimmed
+                    renameRatingItem(oldName: oldName, newName: trimmed, context: context)
+                    editingIndex = nil
+                    editingName = ""
+                })
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 120)
+                .submitLabel(.done)
+                .onSubmit {
+                    UIApplication.shared.endEditing()
+                }
+            } else {
+                Button(action: {
+                    editingIndex = index
+                    editingName = item
+                }) {
+                    RatingStepper(item: item, value: Binding(
+                        get: { ratings[item] ?? 3 },
+                        set: { ratings[item] = $0 })
+                    )
+                    .foregroundColor(.primary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    // 採点項目名一括置換
+    func renameRatingItem(oldName: String, newName: String, context: NSManagedObjectContext) {
+        let fetchRequest: NSFetchRequest<FoodLog> = FoodLog.fetchRequest()
+        do {
+            let logs = try context.fetch(fetchRequest)
+            for log in logs {
+                if var ratings = log.ratings as? [String: Int], let value = ratings[oldName] {
+                    ratings.removeValue(forKey: oldName)
+                    ratings[newName] = value
+                    log.ratings = ratings as NSDictionary
                 }
             }
+            try context.save()
+        } catch {
+            print("採点項目名一括置換エラー: \(error)")
         }
     }
 }
@@ -930,17 +1257,19 @@ struct AnalysisView: View {
         .sorted { $0.count > $1.count }
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            MonthlySection(monthlyCounts: monthlyCounts)
-            Divider().padding(.vertical, 8)
-            Text("駅ごとの記録数・平均点（上位10駅）")
-                .font(.headline)
-                .padding(.bottom, 4)
-            StationStatsChart(stats: Array(stationStats.prefix(10)))
-            StationStatsList(stats: Array(stationStats.prefix(10)))
-            Spacer()
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                MonthlySection(monthlyCounts: monthlyCounts)
+                Divider().padding(.vertical, 8)
+                Text("駅ごとの記録数・平均点（上位10駅）")
+                    .font(.headline)
+                    .padding(.bottom, 4)
+                StationStatsChart(stats: Array(stationStats.prefix(10)))
+                StationStatsList(stats: Array(stationStats.prefix(10)))
+                Spacer()
+            }
+            .padding()
         }
-        .padding()
     }
 }
 
@@ -1156,6 +1485,16 @@ let trainLines: [String: [String]] = [
 ]
 let trainLineNames = trainLines.keys.sorted()
 
+let commonRatingKey = "総合評価"
+
 #Preview {
     ContentView()
 }
+
+#if canImport(UIKit)
+extension UIApplication {
+    func endEditing() {
+        sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
+}
+#endif
