@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>あなたの写真から料理の画像を記録に追加するためにアクセスが必要です。</string>
+	<key>NSCameraUsageDescription</key>
+	<string>料理の写真を撮影して記録に追加するためにカメラへのアクセスが必要です。</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>近くの駅や地名を自動入力するために位置情報の利用が必要です。</string>
+</dict>
+</plist>
